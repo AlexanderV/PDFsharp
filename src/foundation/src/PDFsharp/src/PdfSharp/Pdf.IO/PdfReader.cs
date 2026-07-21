@@ -409,7 +409,7 @@ namespace PdfSharp.Pdf.IO
                 reachables = document.xrefTable.AllXRefs;
                 document.xrefTable.CheckConsistence();
 #endif
-                if (openMode == PdfDocumentOpenMode.Modify)
+                if (openMode == PdfDocumentOpenMode.Modify || openMode == PdfDocumentOpenMode.ModifyIncremental)
                 {
                     // Create new or change existing document IDs.
                     if (_document.Internals.SecondDocumentID == "")
@@ -424,12 +424,18 @@ namespace PdfSharp.Pdf.IO
                     // Change modification date.
                     _document.Info.ModificationDate = DateTime.Now;
 
-                    // Remove all unreachable objects.
-                    int removed = _document.IrefTable.Compact();
-                    if (removed != 0)
+                    // Append-only incremental updates MUST keep the on-disk object numbering intact
+                    // (the original bytes are re-emitted verbatim and referenced by their file numbers),
+                    // so neither compacting away "unreachable" objects nor renumbering may run.
+                    if (openMode == PdfDocumentOpenMode.Modify)
                     {
-                        //Debug.WriteLine("Number of deleted unreachable objects: " + removed);
-                        PdfSharpLogHost.PdfReadingLogger.LogInformation("Number of deleted unreachable objects: {Removed}", removed);
+                        // Remove all unreachable objects.
+                        int removed = _document.IrefTable.Compact();
+                        if (removed != 0)
+                        {
+                            //Debug.WriteLine("Number of deleted unreachable objects: " + removed);
+                            PdfSharpLogHost.PdfReadingLogger.LogInformation("Number of deleted unreachable objects: {Removed}", removed);
+                        }
                     }
 
                     // Force flattening of page tree.
@@ -437,8 +443,11 @@ namespace PdfSharp.Pdf.IO
                     Debug.Assert(pages != null);
 
                     _document.IrefTable.CheckConsistence();
-                    _document.IrefTable.Renumber();
-                    _document.IrefTable.CheckConsistence();
+                    if (openMode == PdfDocumentOpenMode.Modify)
+                    {
+                        _document.IrefTable.Renumber();
+                        _document.IrefTable.CheckConsistence();
+                    }
                 }
             }
             catch (Exception ex)

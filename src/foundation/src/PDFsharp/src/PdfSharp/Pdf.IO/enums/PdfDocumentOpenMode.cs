@@ -16,6 +16,15 @@ namespace PdfSharp.Pdf.IO
         Modify,
 
         /// <summary>
+        /// Like <see cref="Modify"/>, but the original object numbering is preserved: the reader does
+        /// NOT compact away unreachable objects nor renumber the cross-reference table. This is required
+        /// for append-only incremental updates (see <c>PdfDocument.SaveIncrementalAsync</c>), where the
+        /// original file bytes are re-emitted verbatim and every new/modified object must keep the exact
+        /// object number it has on disk so a prior digital signature stays valid.
+        /// </summary>
+        ModifyIncremental,
+
+        /// <summary>
         /// The PDF stream is opened for importing pages from it. A document opened in this mode cannot
         /// be modified.
         /// </summary>
