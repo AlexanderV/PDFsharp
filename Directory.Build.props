@@ -1,0 +1,12 @@
+<Project>
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <SignAssembly>false</SignAssembly>
+    <DelaySign>false</DelaySign>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591;CS0618;CS8618;CS8600;CS8601;CS8602;CS8603;CS8604;CS8625;CS0219;CS0169;CS0414;NU1701</NoWarn>
+  </PropertyGroup>
+</Project>
