@@ -185,7 +185,7 @@ namespace PdfSharp.Pdf.Signatures
 
             // Annotation keys.
             signatureField.Elements.Add(PdfAcroField.Keys.FT, new PdfName("/Sig"));
-            signatureField.Elements.Add(PdfAcroField.Keys.T, new PdfString("Signature1")); // TODO_OLD If already exists, will it cause error? implement a name chooser if yes.
+            signatureField.Elements.Add(PdfAcroField.Keys.T, new PdfString(ChooseFieldName())); // unique per signature (required for multi-signature)
             signatureField.Elements.Add(PdfAcroField.Keys.Ff, new PdfInteger(132));
             signatureField.Elements.Add(PdfAcroField.Keys.DR, new PdfDictionary());
             signatureField.Elements.Add(PdfSignatureField.Keys.Type, new PdfName("/Annot"));
@@ -206,6 +206,38 @@ namespace PdfSharp.Pdf.Signatures
             Document.Internals.AddObject(signatureField);
 
             return signatureField;
+        }
+
+        /// <summary>
+        /// Picks a form-field name not yet used by any existing field, e.g. "Signature1", "Signature2",…
+        /// PDF form fields must have unique fully-qualified names; reusing one breaks multi-signature
+        /// (validators merge or reject the duplicate). Layered signatures each get a fresh name.
+        /// </summary>
+        string ChooseFieldName()
+        {
+            // Collect the names of fields already present (from an already-signed input). The AcroForm
+            // property dereferences the indirect /AcroForm and throws when none exists yet (first
+            // signature) — treat that as "no fields".
+            var used = new HashSet<string>(StringComparer.Ordinal);
+            PdfArray? fields = null;
+            try { fields = Document.Catalog.AcroForm?.Elements.GetArray(PdfAcroForm.Keys.Fields); }
+            catch { /* document has no AcroForm yet → first signature */ }
+            if (fields != null)
+            {
+                for (int i = 0; i < fields.Elements.Count; i++)
+                {
+                    var field = fields.Elements.GetDictionary(i);
+                    var name = field?.Elements.GetString(PdfAcroField.Keys.T);
+                    if (!string.IsNullOrEmpty(name))
+                        used.Add(name!);
+                }
+            }
+            for (int n = 1; ; n++)
+            {
+                var candidate = "Signature" + n.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                if (!used.Contains(candidate))
+                    return candidate;
+            }
         }
 
         PdfSignature2 GetSignatureDictionary(PdfSignaturePlaceholderItem contents, PdfPlaceholderObject byteRange)
