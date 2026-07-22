@@ -45,5 +45,27 @@ namespace PdfSharp.Pdf.Signatures
         /// The page index, zero-based, of the page showing the signature.
         /// </summary>
         public int PageIndex { get; init; }
+
+        /// <summary>
+        /// Optional EXTRA visible placements, beyond <see cref="Rectangle"/> on <see cref="PageIndex"/>.
+        /// When null or empty, a classic single merged field/widget is written (byte-for-byte as before).
+        /// When any are present, the signature becomes ONE field with several widget annotations (/Kids) —
+        /// the SAME cryptographic signature shown on several pages: one /Contents hole, one /ByteRange.
+        /// This models "one signer, one signature, several pages"; it does NOT create extra signatures.
+        /// </summary>
+        public IReadOnlyList<PdfSignaturePlacement>? AdditionalPlacements { get; init; }
+    }
+
+    /// <summary>
+    /// One additional (page, rectangle) placement of a multi-widget signature field. See
+    /// <see cref="DigitalSignatureOptions.AdditionalPlacements"/>.
+    /// </summary>
+    public sealed class PdfSignaturePlacement
+    {
+        /// <summary>Zero-based index of the page this extra widget appears on.</summary>
+        public int PageIndex { get; init; }
+
+        /// <summary>The widget rectangle on that page.</summary>
+        public XRect Rectangle { get; init; }
     }
 }

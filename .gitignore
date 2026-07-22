@@ -1,0 +1,3 @@
+# Build artifacts (vendored fork — keep the working tree clean so submodule commits stay source-only)
+bin/
+obj/

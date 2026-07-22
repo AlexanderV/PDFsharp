@@ -60,6 +60,12 @@ namespace PdfSharp.Pdf
                 Add(Catalog.Reference);
                 Add(AcroForm.Reference);
                 Add(Pages[_digitalSignatureHandler.Options.PageIndex].Reference);
+                // A multi-widget signature also modifies the /Annots of EVERY page carrying an additional
+                // placement — those pages must be in the changed set too, or their new widget would be an
+                // orphan object no page references (invisible in viewers). Dedup is handled by Add().
+                if (_digitalSignatureHandler.Options.AdditionalPlacements is { } extraPlacements)
+                    foreach (var placement in extraPlacements)
+                        Add(Pages[placement.PageIndex].Reference);
 
                 // 3) append the changed objects, recording their new byte positions
                 foreach (var iref in changed)

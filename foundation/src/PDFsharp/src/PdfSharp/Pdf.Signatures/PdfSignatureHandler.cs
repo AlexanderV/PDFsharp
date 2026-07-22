@@ -4,8 +4,10 @@
 #if !NET6_0_OR_GREATER
 using System.Text;
 #endif
+using PdfSharp.Drawing;
 using PdfSharp.Pdf.AcroForms;
 using PdfSharp.Pdf.Advanced;
+using PdfSharp.Pdf.Annotations;
 using PdfSharp.Pdf.Internal;
 using PdfSharp.Pdf.IO;
 
@@ -148,6 +150,16 @@ namespace PdfSharp.Pdf.Signatures
             _signatureFieldByteRangePlaceholder = new PdfPlaceholderObject(ByteRangePlaceholderLength);
 
             var signatureDictionary = GetSignatureDictionary(_placeholderItem, _signatureFieldByteRangePlaceholder);
+
+            // One signer on several pages: build ONE field with several widget kids (one /Contents hole).
+            // Only reached when the caller asked for extra placements; the single-placement path below is
+            // left byte-for-byte unchanged so the existing (production) routes are unaffected.
+            if (Options.AdditionalPlacements is { Count: > 0 })
+            {
+                AddMultiWidgetSignatureField(signatureDictionary);
+                return;
+            }
+
             var signatureField = GetSignatureField(signatureDictionary);
 
             var annotations = Document.Pages[Options.PageIndex].Elements.GetArray(PdfPage.Keys.Annots);
@@ -206,6 +218,124 @@ namespace PdfSharp.Pdf.Signatures
             Document.Internals.AddObject(signatureField);
 
             return signatureField;
+        }
+
+        /// <summary>
+        /// Builds ONE signature field shown on SEVERAL pages: a parent field (/FT /Sig, /V, /T, /Ff, /Kids)
+        /// plus one widget annotation per placement (/Subtype /Widget, /Rect, /P, /Parent, /AP). Every
+        /// widget shares the single signature value — one /Contents hole, one /ByteRange — so this is
+        /// cryptographically ONE signature (what "a person's signature on several pages" means in PDF; see
+        /// PDF 2.0 §12.7.4.5: a field with multiple widget kids must NOT be merged with the widget). Only
+        /// reached when the caller supplied <see cref="DigitalSignatureOptions.AdditionalPlacements"/>.
+        /// </summary>
+        void AddMultiWidgetSignatureField(PdfSignature2 signatureDic)
+        {
+            // Primary placement (from Options) first, then the extras — order fixes the widget /Kids order.
+            var placements = new List<(int PageIndex, XRect Rectangle)> { (Options.PageIndex, Options.Rectangle) };
+            foreach (var p in Options.AdditionalPlacements!)
+            {
+                placements.Add((p.PageIndex, p.Rectangle));
+            }
+
+            foreach (var (pageIndex, rectangle) in placements)
+            {
+                if (pageIndex < 0 || pageIndex >= Document.PageCount)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(Options.AdditionalPlacements),
+                        $"Signature page {pageIndex + 1} doesn't exist; document has only {Document.PageCount} page(s).");
+                }
+                // Reject a malformed widget rectangle (non-finite or non-positive size) before it reaches the
+                // /Rect, appearance /BBox and content stream, where it would produce a corrupt annotation.
+                if (!IsFiniteRect(rectangle) || rectangle.Width <= 0 || rectangle.Height <= 0)
+                {
+                    throw new ArgumentException(
+                        $"Signature placement rectangle must have finite, positive width/height (got {rectangle}).",
+                        nameof(Options.AdditionalPlacements));
+                }
+            }
+
+            // Parent field: carries /V + /T + /Ff, but is NOT itself a widget (no /Rect, /P, /Subtype).
+            var field = new PdfSignatureField(Document);
+            field.Elements.Add(PdfAcroField.Keys.V, signatureDic);
+            field.Elements.Add(PdfAcroField.Keys.FT, new PdfName("/Sig"));
+            field.Elements.Add(PdfAcroField.Keys.T, new PdfString(ChooseFieldName())); // unique per signature
+            field.Elements.Add(PdfAcroField.Keys.Ff, new PdfInteger(132));
+            Document.Internals.AddObject(field);
+
+            var handler = Options.AppearanceHandler;
+            var kids = new PdfArray(Document);
+            foreach (var (pageIndex, rect) in placements)
+            {
+                var widget = new PdfDictionary(Document);
+                widget.Elements.Add(PdfSignatureField.Keys.Type, new PdfName("/Annot"));
+                widget.Elements.Add("/Subtype", new PdfName("/Widget"));
+                widget.Elements.Add("/Rect", new PdfRectangle(rect));
+                widget.Elements.Add("/P", Document.Pages[pageIndex]);
+                widget.Elements.Add(PdfAcroField.Keys.Parent, field);
+                if (handler != null)
+                {
+                    var ap = new PdfDictionary(Document);
+                    ap.Elements["/N"] = RenderWidgetAppearance(rect, handler);
+                    widget.Elements.Add("/AP", ap);
+                }
+                Document.Internals.AddObject(widget);
+                kids.Elements.Add(widget);
+
+                var annots = Document.Pages[pageIndex].Elements.GetArray(PdfPage.Keys.Annots);
+                if (annots == null)
+                {
+                    Document.Pages[pageIndex].Elements.Add(PdfPage.Keys.Annots, new PdfArray(Document, widget));
+                }
+                else
+                {
+                    annots.Elements.Add(widget);
+                }
+            }
+            field.Elements.Add(PdfAcroField.Keys.Kids, kids);
+
+            // AcroForm plumbing — identical to the single-widget path; only the field object differs.
+            var catalog = Document.Catalog;
+            if (catalog.Elements.GetObject(PdfCatalog.Keys.AcroForm) == null)
+            {
+                catalog.Elements.Add(PdfCatalog.Keys.AcroForm, new PdfAcroForm(Document));
+            }
+            if (!catalog.AcroForm.Elements.ContainsKey(PdfAcroForm.Keys.SigFlags))
+            {
+                catalog.AcroForm.Elements.Add(PdfAcroForm.Keys.SigFlags, new PdfInteger(3));
+            }
+            else
+            {
+                var sigFlagVersion = catalog.AcroForm.Elements.GetInteger(PdfAcroForm.Keys.SigFlags);
+                if (sigFlagVersion < 3)
+                {
+                    catalog.AcroForm.Elements.SetInteger(PdfAcroForm.Keys.SigFlags, 3);
+                }
+            }
+            if (catalog.AcroForm.Elements.GetValue(PdfAcroForm.Keys.Fields) == null)
+            {
+                catalog.AcroForm.Elements.SetValue(PdfAcroForm.Keys.Fields, new PdfAcroField.PdfAcroFieldCollection(new PdfArray()));
+            }
+            catalog.AcroForm.Fields.Elements.Add(field);
+        }
+
+        /// <summary>True if every component of the rectangle is a finite (non-NaN, non-infinite) number.</summary>
+        static bool IsFiniteRect(XRect r) =>
+            !double.IsNaN(r.X) && !double.IsInfinity(r.X) && !double.IsNaN(r.Y) && !double.IsInfinity(r.Y) &&
+            !double.IsNaN(r.Width) && !double.IsInfinity(r.Width) && !double.IsNaN(r.Height) && !double.IsInfinity(r.Height);
+
+        /// <summary>
+        /// Renders one widget's normal appearance (/N) form in LOCAL box coordinates and returns its
+        /// reference. Mirrors <see cref="PdfSignatureField"/>.RenderCustomAppearance for a given rectangle.
+        /// </summary>
+        PdfReference RenderWidgetAppearance(XRect rect, IAnnotationAppearanceHandler handler)
+        {
+            var form = new XForm(Document, rect.Size);
+            var gfx = XGraphics.FromForm(form);
+            handler.DrawAppearance(gfx, new XRect(0, 0, rect.Width, rect.Height));
+            form.DrawingFinished();
+            var reference = form.PdfForm.Reference;
+            form.PdfRenderer?.Close();
+            return reference;
         }
 
         /// <summary>
