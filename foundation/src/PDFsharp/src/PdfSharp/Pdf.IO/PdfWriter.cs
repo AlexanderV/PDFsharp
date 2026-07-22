@@ -305,7 +305,12 @@ namespace PdfSharp.Pdf.IO
 
         public void Write(PdfRectangle rect)
         {
-            const string format = Config.SignificantDecimalPlaces3;
+            // Match the precision of ordinary reals (Write(double)/Write(PdfReal) use
+            // SignificantDecimalPlaces7). With only 3 places, re-serializing an existing page rounds its
+            // /MediaBox (e.g. 595.2756 -> 595.276), which is a page-geometry change: a signature added AFTER
+            // an earlier one then makes validators (Adobe) report "changed pages" on the earlier revision.
+            // Higher precision lets /MediaBox (and /CropBox, /Rect, /BBox) round-trip unchanged.
+            const string format = Config.SignificantDecimalPlaces7;
             WriteSeparator(CharCat.Delimiter/*, '/'*/);
             WriteRaw(PdfEncoders.Format("[{0:" + format + "} {1:" + format + "} {2:" + format + "} {3:" + format + "}]", rect.X1, rect.Y1, rect.X2, rect.Y2));
             _lastCat = CharCat.Delimiter;
