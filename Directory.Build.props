@@ -9,4 +9,10 @@
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);CS1591;CS0618;CS8618;CS8600;CS8601;CS8602;CS8603;CS8604;CS8625;CS0219;CS0169;CS0414;NU1701</NoWarn>
   </PropertyGroup>
+
+  <!-- Provide a newer Roslyn so the .NET 6 SDK can compile C# 12 (primary constructors,
+       collection expressions). Keeps TargetFramework net6.0; only the compiler changes. -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Net.Compilers.Toolset" Version="4.8.0" PrivateAssets="all" />
+  </ItemGroup>
 </Project>
