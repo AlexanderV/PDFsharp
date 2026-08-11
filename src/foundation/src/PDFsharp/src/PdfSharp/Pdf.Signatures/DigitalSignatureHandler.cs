@@ -4,6 +4,7 @@
 #if !NET8_0_OR_GREATER
 using System.Text;
 #endif
+using PdfSharp.Drawing;
 using PdfSharp.Pdf.Advanced;
 using PdfSharp.Pdf.Annotations;
 using PdfSharp.Pdf.Forms;
@@ -168,8 +169,7 @@ namespace PdfSharp.Pdf.Signatures
         /// <exception cref="ArgumentOutOfRangeException"></exception>
         internal async Task AddSignatureComponentsAsync() // #US321 TODO Use appropriate classes.
         {
-            if (Options.PageIndex >= Document.PageCount)
-                throw new ArgumentOutOfRangeException($"Signature page doesn't exist, specified page was {Options.PageIndex + 1} but document has only {Document.PageCount} page(s).");
+            var placements = GetPlacements();
 
             var signatureSize = await Signer.GetSignatureSizeAsync().ConfigureAwait(false);
             _contentsPlaceholder = new(2 * signatureSize + 2);
@@ -179,14 +179,25 @@ namespace PdfSharp.Pdf.Signatures
             var acroForm = catalog.GetOrCreateAcroForm();
 
             var signatureDictionary = GetSignatureDictionary(_contentsPlaceholder, _byteRangePlaceholder);
-            var signatureField = GetSignatureField(signatureDictionary, ChooseFieldName(acroForm));
+            var fieldName = ChooseFieldName(acroForm);
 
-            var page = Document.Pages[Options.PageIndex];
-            var annotations = page.Elements.GetArray(PdfPage.Keys.Annots);
-            if (annotations == null)
-                page.Elements.Add(PdfPage.Keys.Annots, new PdfArray(Document, signatureField));
+            PdfFormSignatureField signatureField;
+            if (placements.Count == 1)
+            {
+                // One placement: the field and its widget annotation are one and the same object.
+                signatureField = GetSignatureField(signatureDictionary, fieldName);
+                AddAnnotationToPage(placements[0].PageIndex, signatureField);
+            }
             else
-                annotations.Elements.Add(signatureField);
+            {
+                signatureField = GetMultiWidgetSignatureField(signatureDictionary, fieldName, placements);
+            }
+
+            // The interactive form and the catalog are objects of the original file that are modified here.
+            // An incremental update must write them again.
+            Document.MarkAsModified(acroForm);
+            Document.MarkAsModified(acroForm.Fields);
+            Document.MarkAsModified(catalog);
 
             if (!acroForm.Elements.ContainsKey(PdfForm.Keys.SigFlags))
                 acroForm.Elements.Add(PdfForm.Keys.SigFlags, new PdfInteger(3, true));
@@ -198,16 +209,65 @@ namespace PdfSharp.Pdf.Signatures
             }
             
             acroForm.Fields.Elements.Add(signatureField);
+        }
 
-            // The page, the array of annotations (which may be an indirect object of its own), the
-            // interactive form and the catalog are objects of the original file that are modified here.
-            // An incremental update must write them again.
-            Document.MarkAsModified(page);
-            if (annotations != null)
+        /// <summary>
+        /// Gets the placements of the visual representation of the signature, the primary one first.
+        /// </summary>
+        /// <exception cref="ArgumentOutOfRangeException">A placement refers to a page that does not exist.</exception>
+        /// <exception cref="ArgumentException">A placement has an invalid rectangle.</exception>
+        List<PdfSignaturePlacement> GetPlacements()
+        {
+            var placements = new List<PdfSignaturePlacement>
+            {
+                new() { PageIndex = Options.PageIndex, Rectangle = Options.Rectangle }
+            };
+            if (Options.AdditionalPlacements != null)
+                placements.AddRange(Options.AdditionalPlacements);
+
+            foreach (var placement in placements)
+            {
+                if (placement.PageIndex < 0 || placement.PageIndex >= Document.PageCount)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(Options.PageIndex),
+                        $"Signature page doesn't exist, specified page was {placement.PageIndex + 1} but document has only {Document.PageCount} page(s).");
+                }
+
+                // A rectangle that is not a number reaches /Rect, the appearance /BBox and the content
+                // stream of the appearance, where it creates an invalid annotation.
+                var rectangle = placement.Rectangle;
+                if (Double.IsNaN(rectangle.X) || Double.IsInfinity(rectangle.X) ||
+                    Double.IsNaN(rectangle.Y) || Double.IsInfinity(rectangle.Y) ||
+                    Double.IsNaN(rectangle.Width) || Double.IsInfinity(rectangle.Width) ||
+                    Double.IsNaN(rectangle.Height) || Double.IsInfinity(rectangle.Height))
+                {
+                    throw new ArgumentException($"Signature rectangle must contain finite numbers, but is {rectangle}.",
+                        nameof(Options.Rectangle));
+                }
+            }
+            return placements;
+        }
+
+        /// <summary>
+        /// Adds an annotation to the annotations of the specified page.
+        /// </summary>
+        void AddAnnotationToPage(int pageIndex, PdfObject annotation)
+        {
+            var page = Document.Pages[pageIndex];
+            var annotations = page.Elements.GetArray(PdfPage.Keys.Annots);
+            if (annotations == null)
+                page.Elements.Add(PdfPage.Keys.Annots, new PdfArray(Document, annotation));
+            else
+            {
+                annotations.Elements.Add(annotation);
+
+                // The array of annotations may be an indirect object of its own.
                 Document.MarkAsModified(annotations);
-            Document.MarkAsModified(acroForm);
-            Document.MarkAsModified(acroForm.Fields);
-            Document.MarkAsModified(catalog);
+            }
+
+            // The page is an object of the original file that is modified here.
+            // An incremental update must write it again.
+            Document.MarkAsModified(page);
         }
 
         /// <summary>
@@ -276,6 +336,81 @@ namespace PdfSharp.Pdf.Signatures
             //Document.Internals.AddObject(signatureField); AcroFields are already indirect.
 
             return signatureField;
+        }
+
+        /// <summary>
+        /// Creates one signature field that is shown at several places: a field that is not a widget
+        /// annotation itself, plus one widget annotation per placement below it.
+        /// All widgets share the one signature value of the field, i.e. there is one /Contents entry and
+        /// one /ByteRange entry. This is one signature shown several times, not several signatures.
+        /// A field with more than one widget annotation must not be merged with its widget annotation
+        /// (see PDF 2.0, 12.7.4.5 Widget annotations), which is why the field and the widgets are
+        /// separate objects here.
+        /// </summary>
+        PdfFormSignatureField GetMultiWidgetSignatureField(PdfSignature signatureDic, string fieldName,
+            List<PdfSignaturePlacement> placements)
+        {
+            var signatureField = new PdfFormSignatureField(Document);
+
+            signatureField.Elements.Add(PdfFormField.Keys.V, signatureDic);
+            signatureField.Elements.Add(PdfFormField.Keys.FT, new PdfName(PdfFormFieldType.Signature));
+            signatureField.Elements.Add(PdfFormField.Keys.T, new PdfString(fieldName));
+            signatureField.Elements.Add(PdfFormField.Keys.Ff, new PdfInteger(132));
+
+            var defaultAppearanceHandler = Options.AppearanceHandler ?? new DefaultSignatureAppearanceHandler
+            {
+                Location = Options.Location,
+                Reason = Options.Reason,
+                Signer = Signer.CertificateName
+            };
+
+            var kids = new PdfArray(Document);
+            foreach (var placement in placements)
+            {
+                // A widget below a field is one object that is both a field without a type of its own and
+                // a widget annotation. It is referred to by the /Kids of the field and by the /Annots of
+                // the page it appears on.
+                var widget = new PdfFormFieldWidget(Document);
+                widget.Elements.Add(PdfAnnotation.Keys.Type, new PdfName("/Annot"));
+                widget.Elements.Add(PdfAnnotation.Keys.Subtype, new PdfName("/Widget"));
+                widget.Elements.Add(PdfAnnotation.Keys.Rect, new PdfRectangle(placement.Rectangle));
+                widget.Elements.Add(PdfAnnotation.Keys.P, Document.Pages[placement.PageIndex]);
+                widget.Elements.Add(PdfFormField.Keys.Parent, signatureField);
+                RenderWidgetAppearance(widget, placement.Rectangle,
+                    placement.AppearanceHandler ?? defaultAppearanceHandler);
+
+                kids.Elements.Add(widget);
+                AddAnnotationToPage(placement.PageIndex, widget.GetAsWidgetAnnotation());
+            }
+            signatureField.Elements.Add(PdfFormField.Keys.Kids, kids);
+
+            return signatureField;
+        }
+
+        /// <summary>
+        /// Creates the normal appearance of one widget annotation of a multi-widget signature field.
+        /// </summary>
+        void RenderWidgetAppearance(PdfDictionary widget, XRect rectangle, IAnnotationAppearanceHandler appearanceHandler)
+        {
+            if (rectangle.Width <= 0 || rectangle.Height <= 0)
+                return;
+
+            var form = new XForm(Document, rectangle.Size);
+            var gfx = XGraphics.FromForm(form);
+
+            // The rectangle is passed as it is, like PdfFormSignatureField does for a field that is its
+            // own widget annotation, so that an appearance handler behaves the same in both cases.
+            appearanceHandler.DrawAppearance(gfx, rectangle);
+
+            form.DrawingFinished();
+
+            var appearance = new PdfDictionary(Document);
+            appearance.Elements["/N"] = form.PdfForm.RequiredReference;
+            widget.Elements[PdfAnnotation.Keys.AP] = appearance;
+
+            // PdfRenderer can be null.
+            // ReSharper disable once ConditionalAccessQualifierIsNonNullableAccordingToAPIContract
+            form.PdfRenderer?.Close();
         }
 
         PdfSignature GetSignatureDictionary(PdfPlaceholder contents, PdfPlaceholder byteRange) // #US321 TODO Use appropriate classes.
