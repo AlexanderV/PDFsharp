@@ -40,6 +40,9 @@
     <!-- This value can be and should be set in the Local.Build.props file to keep it out of the repo. -->
     <PDFsharpBuildFewerFrameworks>false</PDFsharpBuildFewerFrameworks>
 
+    <!-- Temabit integration build: build for .NET 6 only, because the consuming solution targets .NET 6. -->
+    <PDFsharpBuildNet6>true</PDFsharpBuildNet6>
+
     <!-- Build empira nuget packages (custom releases). -->
     <!--<EmpiraIntranet>true</EmpiraIntranet>-->
 
@@ -99,6 +102,54 @@
     <!-- Frameworks for NuGet -->
     <PDFsharpTargetFrameworks_NuGet>net10.0</PDFsharpTargetFrameworks_NuGet>
     <PDFsharpTargetFrameworks_NuGet_Window>net10.0-windows</PDFsharpTargetFrameworks_NuGet_Window>
+  </PropertyGroup>
+
+  <!--
+    Temabit integration build.
+    The Enigma signature service consumes this repository as a git submodule and targets .NET 6,
+    so everything is built for .NET 6 only. This block belongs to the integration branch only and
+    is never part of a merge request to the upstream repository.
+  -->
+  <PropertyGroup Condition="'$(PDFsharpBuildNet6)'=='true'">
+    <DefineConstants>$(DefineConstants);FEWER_FRAMEWORKS</DefineConstants>
+
+    <!-- Not needed if targets are .NET 5 or newer only. -->
+    <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
+
+    <!-- The referenced Microsoft.Extensions.* packages are built for .NET 8 and newer. Their
+         .NET Standard 2.0 assemblies are used and work, but the build warns about the unsupported
+         target framework. -->
+    <SuppressTfmSupportBuildWarnings>true</SuppressTfmSupportBuildWarnings>
+
+    <!-- CS8785: The JSON source generator of the current SDK fails when it runs for .NET 6.
+         PDFsharp defines no JsonSerializerContext, so nothing has to be generated. -->
+    <NoWarn>$(NoWarn);CS8785</NoWarn>
+
+    <!-- Run the executables and the tests on the installed runtime if no .NET 6 runtime is present. -->
+    <RollForward>LatestMajor</RollForward>
+
+    <!-- NuGetNuspecTag allows to choose between different NuSpec files. Use ".Fewer" for small NuGet packages. -->
+    <NuGetNuspecTag Condition="'$(NuGetNuspecTag)' == ''">.Fewer</NuGetNuspecTag>
+
+    <!-- Frameworks for DLLs and EXE -->
+    <PDFsharpTargetFrameworks_Library>net6.0</PDFsharpTargetFrameworks_Library>
+    <PDFsharpTargetFrameworks_NetOnly_Library>net6.0</PDFsharpTargetFrameworks_NetOnly_Library>
+    <PDFsharpTargetFrameworks_Exe>net6.0</PDFsharpTargetFrameworks_Exe>
+    <PDFsharpTargetFrameworks_NetOnly_Exe>net6.0</PDFsharpTargetFrameworks_NetOnly_Exe>
+    <PDFsharpTargetFrameworks_Windows>net6.0-windows</PDFsharpTargetFrameworks_Windows>
+    <PDFsharpTargetFrameworks_NetOnly_Windows>net6.0-windows</PDFsharpTargetFrameworks_NetOnly_Windows>
+
+    <!-- Frameworks for test projects and EXE.
+         The test projects stay on the current .NET, because Microsoft.NET.Test.Sdk does not support
+         .NET 6 anymore. They reference the .NET 6 assemblies of PDFsharp, so the code under test is
+         the code that is delivered. -->
+    <PDFsharpTargetFrameworks_Tests_Library>net10.0</PDFsharpTargetFrameworks_Tests_Library>
+    <PDFsharpTargetFrameworks_Tests_Exe>net10.0</PDFsharpTargetFrameworks_Tests_Exe>
+    <PDFsharpTargetFrameworks_Tests_Windows>net10.0-windows</PDFsharpTargetFrameworks_Tests_Windows>
+
+    <!-- Frameworks for NuGet -->
+    <PDFsharpTargetFrameworks_NuGet>net6.0</PDFsharpTargetFrameworks_NuGet>
+    <PDFsharpTargetFrameworks_NuGet_Window>net6.0-windows</PDFsharpTargetFrameworks_NuGet_Window>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(PDFsharpRunSlowTests)'=='true'">
